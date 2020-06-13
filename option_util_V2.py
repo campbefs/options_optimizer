@@ -226,7 +226,7 @@ def risk_analysis(df, opt_strikes, opt_prices, var_std, exp_date, ticker):
     risk_spread = round(sum(mock['risk_spread']),2)
     
     # Cost of trade
-    cost = (-buy_call_price - buy_put_price + sell_call_price + sell_put_price)*100
+    cost = -(-buy_call_price - buy_put_price + sell_call_price + sell_put_price)*100
     
     # Bear Bull -  probability of profit with positive movement 30% - 10% = 20% more proability upside
     bull_bear = df[ ((df['price_perc'] > 0)) & (df['profit_loss'] > 0) ]['prob_pct'].sum() \
@@ -245,18 +245,30 @@ def risk_analysis(df, opt_strikes, opt_prices, var_std, exp_date, ticker):
     # Max Loss & Max Profit
     max_loss = df['profit_loss'].min()
     max_profit = df['profit_loss'].max()
+
+    # Current Value
+    current_value = df[df['price_perc'] == 0]['profit_loss'].values[0]
+    head_profit = df['profit_loss'].head(1).values[0]
+    tail_profit = df['profit_loss'].tail(1).values[0]
+
     
     # Risk Ratio
 
     #try:
-    #risk_ratio_95th = round(min(df[ (df['prob'] > .05) & (df['profit_loss'] > 0)]\
-    #                           ['profit_loss'].max() / \
-    #                abs(df[ (df['prob'] > .05) & (df['profit_loss'] < 0)] \
-    #                 ['profit_loss'].min()),3),2)
+#    risk_ratio_95th = round(min(df[ (df['prob'] > .05) & (df['profit_loss'] > 0)]\
+#                               ['profit_loss'].max() / \
+#                    abs(df[ df['profit_loss'] < 0]['profit_loss'].min()), 3),2)
+
+    risk_ratio_95th = round(min( \
+                      min( head_profit, tail_profit)  / \
+                    abs(df[ df['profit_loss'] < 0]['profit_loss'].min()), 1.3),2)
+
+    min_leg_profit = min( head_profit, tail_profit )
     
-    risk_ratio_95th = round(min(df[ df['profit_loss'] > 0]['profit_loss'].max() / \
-                        abs(df[ df['profit_loss'] < 0]['profit_loss'].min()), 3),2)
-    
+    #risk_ratio_95th = round(min(df[ df['profit_loss'] > 0]['profit_loss'].max() / \
+    #                    abs(df[ df['profit_loss'] < 0]['profit_loss'].min()), 3),2)
+
+    # replacing errors    
     risk_ratio_95th = np.where(math.isnan(risk_ratio_95th),float(0),risk_ratio_95th)
     #except: # ZeroDivisionError:
     #    risk_ratio_95th = 0
@@ -269,19 +281,22 @@ def risk_analysis(df, opt_strikes, opt_prices, var_std, exp_date, ticker):
     median_profit = df[ df['profit_loss'] > 0].sort_values('profit_loss')['profit_loss'].median()
     median_loss = df[ df['profit_loss'] < 0].sort_values('profit_loss')['profit_loss'].median()
 
-    
+
+
     return pd.DataFrame( { 'stock': ticker, 'exp_date': exp_date, 'buy_call': [str(buy_call)+' | '+str(buy_call_price)], \
                           'buy_put': [str(buy_put)+' | '+str(buy_put_price)], \
                           'sell_call': [str(sell_call)+' | '+str(sell_call_price)], \
                           'sell_put': [str(sell_put)+' | '+str(sell_put_price)], \
                           'cost': round(cost,2), \
                           'exp_profit': round(exp_profit,2), 'risk_spread': round(risk_spread,2), \
-                            'bull_bear': round(bull_bear,2), f'var_std_{var_std}': round(VAR,2), \
-                          'max_loss': round(max_loss,2), 'max_profit': round(max_profit,2), 'risk_ratio_95th': risk_ratio_95th, \
                            'odds_profit': round(odds_profit,2), 'odds_loss': round(odds_loss,2), \
-                           'median_profit': round(median_profit,2), 'median_loss': round(median_loss,2), \
+                          'max_loss': round(max_loss,2), 'max_profit': round(max_profit,2), 'risk_ratio_95th': risk_ratio_95th, \
+                          'median_profit': round(median_profit,2), 'median_loss': round(median_loss,2), \
+                          'bull_bear': round(bull_bear,2), f'var_std_{var_std}': round(VAR,2), \
                           'buy_call_price': buy_call_price, 'buy_put_price': buy_put_price, \
-                          'sell_call_price': sell_call_price, 'sell_put_price': sell_put_price
+                          'sell_call_price': sell_call_price, 'sell_put_price': sell_put_price, \
+                          'current_value': round(current_value,2), 'head_profit': round(head_profit,2), \
+                          'tail_profit': round(tail_profit,0), 'min_leg_profit': min_leg_profit
                          }
                        )
     
@@ -299,6 +314,7 @@ def ric_permutations3(inputs):
     strategy_list = inputs['strategy_list']
     ticker = inputs['ticker']
     option_chain = inputs['option_chain']    
+    current_price = inputs['current_price']
 
     stock_data_dict = {}
     final_ret_std_dict = {}
@@ -369,6 +385,9 @@ def ric_permutations3(inputs):
                     # filter down to specific Options Strategy only
                     exp_combos = exp_combos[ (exp_combos['buy_put'] <= exp_combos['buy_call']*1.05  ) & \
                                     (exp_combos['sell_call'] > exp_combos['buy_call']) & \
+                                    (exp_combos['sell_put'] < exp_combos['buy_put']) & \
+                                    (exp_combos['buy_put'] <= current_price*1.1  ) & \
+                                    (exp_combos['buy_call'] >= current_price*0.9  ) & \
                                     (exp_combos['sell_put'] < exp_combos['sell_call']) \
                                    ].reset_index(drop=True)
 
@@ -562,6 +581,7 @@ def ric_permutations3(inputs):
         'price_std': price_std_dict
     }
     
+    
     return real_final_combos, std_data, exp_dict
 
 
@@ -636,16 +656,19 @@ def stock_optimizer1(all_data):
 def ric_score(df):
 
     # Expected Profit - max
-    ep_wgt = .5
+    ep_wgt = .2
 
     # Risk Ratio- max
-    rr_wgt = .2
+    rr_wgt = .3
 
     # risk spread - min
-    rs_wgt = .2
+    rs_wgt = .25
 
-    # odds profit -max
-    op_wgt = .1
+    # odds profit -max   # better version of risk spread
+    op_wgt = .25
+
+    # median profit -max
+    mp_wgt = 0
 
     # Convert to numeric
     #df['buy_call_price'] = df['buy_call_price'].apply(pd.to_numeric)
@@ -659,11 +682,27 @@ def ric_score(df):
     df['risk_ratio_95th'] = df['risk_ratio_95th'].apply(pd.to_numeric)
     df['risk_spread'] = df['risk_spread'].apply(pd.to_numeric)
     df['odds_profit'] = df['odds_profit'].apply(pd.to_numeric)
+    df['bull_bear'] = pd.to_numeric(df['bull_bear'], errors='coerce')
+
+
+    df['median_profit'] = pd.to_numeric(df['median_profit'], errors='coerce')
+    df['head_profit'] = pd.to_numeric(df['head_profit'], errors='coerce')
+    df['tail_profit'] = pd.to_numeric(df['tail_profit'], errors='coerce')
+    df['min_leg_profit'] = pd.to_numeric(df['min_leg_profit'], errors='coerce')
+    df[['median_profit', 'head_profit', 'tail_profit', 'min_leg_profit']] = df[['median_profit', 'head_profit', 'tail_profit', \
+                        'min_leg_profit']].fillna(0)
+
         
     
     # Clean up unwanted rows with no chance of profit
-    df = df[ df['odds_profit'].apply(pd.to_numeric)  > 0 ] 
-    df = df[ df['cost'] == df['max_loss'] ]
+    df = df[ df['odds_profit'].apply(pd.to_numeric)  > 0 ]
+
+    # if max_loss falls off the chart then the whole thing is useless
+    df = df[ abs(df['cost']) == abs(df['max_loss']) ]
+
+    # Get rid of rows where the odds profit is too high. it means the loss is likely going to be a margin thing. 
+    df = df[ df['odds_profit'].apply(pd.to_numeric)  < 1 ]
+
         
     # Deleting rows with missing price data  --> remove rows where option != None & price == 0
     #df = df[ (df['buy_call_price'] > 0) | df['buy_call'].str.startswith('None') == True ]
@@ -672,10 +711,10 @@ def ric_score(df):
     #df = df[ (df['sell_put_price'] > 0) | df['sell_put'].str.startswith('None') == True ]
 
     # drop the price columns
-    try:
-        df = df.drop(['buy_call_price','buy_put_price','sell_call_price','sell_put_price'], axis =1)
-    except:
-        pass
+    #try:
+    #    df = df.drop(['buy_call_price','buy_put_price','sell_call_price','sell_put_price'], axis =1)
+    #except:
+    #    pass
 
     # SCORING
     # Expected Profit - uses a weighted average profit using stock price probabilities
@@ -695,9 +734,19 @@ def ric_score(df):
     op_score = (( df['odds_profit'] - df['odds_profit'].min() ) / \
                 (df['odds_profit'].max() - df['odds_profit'].min())*op_wgt)
 
+    # Median Profit - uses a weighted average profit using stock price probabilities
+    mp_score = (( df['median_profit'] - df['median_profit'].min() ) / \
+                (df['median_profit'].max() - df['median_profit'].min())*mp_wgt)
+
     df['score'] = np.where(ep_score.isnull(), ep_wgt, ep_score) + np.where(rr_score.isnull(), rr_wgt, rr_score) + \
-                np.where(rs_score.isnull(), rs_wgt, rs_score) + np.where(op_score.isnull(), op_wgt, op_score)
+                np.where(rs_score.isnull(), rs_wgt, rs_score) + np.where(op_score.isnull(), op_wgt, op_score) + \
+                np.where(mp_score.isnull(), mp_wgt, mp_score)
     
+    # Adding in call and price data separately
+    df['buy_call_strike'] = df['buy_call'].apply(lambda x: x.split('|')[0])
+    df['buy_put_strike'] = df['buy_put'].apply(lambda x: x.split('|')[0])
+    df['sell_call_strike'] = df['sell_call'].apply(lambda x: x.split('|')[0])
+    df['sell_put_strike'] = df['sell_put'].apply(lambda x: x.split('|')[0])
     
     df = df.sort_values('score', ascending=False).reset_index(drop=True)
     
